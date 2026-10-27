@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -48,6 +49,10 @@ type Install struct {
 
 	ServiceDisplayName string `json:"serviceDisplayName"`
 	ServiceDescription string `json:"serviceDescription"`
+
+	// ExtraFiles are copied into the install folder (paths relative to the
+	// config file). They are embedded in the EXE and updated with it.
+	ExtraFiles []string `json:"extraFiles"`
 }
 
 type Tailscale struct {
@@ -156,6 +161,21 @@ func (c *Config) Validate() error {
 		if p == "" {
 			errs = append(errs, fmt.Errorf("icons 缺少 %s", strings.TrimSuffix(name, ".ico")))
 		}
+	}
+	// Extra files land next to ours, so their names must not clash.
+	taken := map[string]bool{}
+	for _, n := range []string{c.ExeName, c.DaemonExe(), "wintun.dll", "THIRD-PARTY-NOTICES.txt"} {
+		taken[strings.ToLower(n)] = true
+	}
+	for _, p := range c.Install.ExtraFiles {
+		name := filepath.Base(filepath.Clean(p))
+		switch {
+		case p == "" || name == "." || badPathRe.MatchString(name):
+			errs = append(errs, fmt.Errorf("install.extraFiles：%q 不是合法的檔案路徑", p))
+		case taken[strings.ToLower(name)]:
+			errs = append(errs, fmt.Errorf("install.extraFiles：%s 跟其他檔案同名", name))
+		}
+		taken[strings.ToLower(name)] = true
 	}
 	if u := c.Update.BaseURL; u != "" && !strings.HasPrefix(u, "https://") && !isLoopbackHTTP(u) {
 		errs = append(errs, errors.New("update.baseURL 必須是 https:// 開頭（測試時可用 http://127.0.0.1）"))

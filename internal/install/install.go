@@ -93,14 +93,18 @@ func serviceSettings(c *brand.Config) tsdeploy.Service {
 	}
 }
 
-// deployDaemon replaces the official tailscaled that earlier versions
-// deployed, then installs or updates the one bundled in this EXE.
-func deployDaemon(c *brand.Config) error {
+// deployBundle replaces the official tailscaled that earlier versions
+// deployed, then installs or updates the one bundled in this EXE and the
+// install.extraFiles.
+func deployBundle(c *brand.Config) error {
 	if err := tsdeploy.RemoveLegacy(Dir(c), StateDir(c), log.Printf); err != nil {
 		return err
 	}
 	unblockOfficialUpdater()
-	return tsdeploy.Deploy(Dir(c), serviceSettings(c), log.Printf)
+	return errors.Join(
+		tsdeploy.Deploy(Dir(c), serviceSettings(c), log.Printf),
+		tsdeploy.DeployExtras(Dir(c), log.Printf),
+	)
 }
 
 // Setup runs when the user starts the downloaded EXE. It elevates once and
@@ -164,7 +168,7 @@ func InstallElevated(c *brand.Config, quiet bool) error {
 		os.Remove(dst + ".old")
 	}
 
-	if err := deployDaemon(c); err != nil {
+	if err := deployBundle(c); err != nil {
 		return err
 	}
 	if err := Register(c, dst); err != nil {
@@ -198,7 +202,7 @@ func unblockOfficialUpdater() {
 // Refresh runs in the new EXE after a GUI self-update (as SYSTEM): it
 // deploys the tailscaled bundled in it and refreshes Installed apps.
 func Refresh(c *brand.Config) error {
-	return errors.Join(deployDaemon(c), Register(c, Exe(c)))
+	return errors.Join(deployBundle(c), Register(c, Exe(c)))
 }
 
 // Register writes the Installed apps entry, the Run-at-login entry and the
@@ -352,6 +356,12 @@ func Uninstall(c *brand.Config, quiet bool) {
 func UninstallElevated(c *brand.Config) error {
 	dir, exe := Dir(c), Exe(c)
 	winx.KillOthersAt(exe, true)
+	// A running extra file would keep the folder from being deleted.
+	for _, name := range tsdeploy.ExtraFiles() {
+		if strings.EqualFold(filepath.Ext(name), ".exe") {
+			winx.KillOthersAt(filepath.Join(dir, name), true)
+		}
+	}
 
 	var errs []error
 	if err := task.Delete(c.AppID); err != nil {
@@ -413,7 +423,7 @@ func RunUpdate(c *brand.Config) error {
 	var errs []error
 	// Normally done by Refresh already; this repairs a failed or damaged deployment.
 	if need, err := tsdeploy.NeedsDeploy(Dir(c)); err != nil || need {
-		if err := deployDaemon(c); err != nil {
+		if err := deployBundle(c); err != nil {
 			errs = append(errs, err)
 		}
 	}

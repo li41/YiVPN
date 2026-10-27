@@ -38,11 +38,14 @@ var bundle embed.FS
 
 // manifest must match the one written by tools/build.
 type manifest struct {
-	Version string `json:"version"`
-	Files   []struct {
-		Name   string `json:"name"`
-		SHA256 string `json:"sha256"`
-	} `json:"files"`
+	Version string       `json:"version"`
+	Files   []bundleFile `json:"files"`  // tailscaled and what it needs
+	Extras  []bundleFile `json:"extras"` // install.extraFiles; not tied to the service
+}
+
+type bundleFile struct {
+	Name   string `json:"name"`
+	SHA256 string `json:"sha256"`
 }
 
 var loadManifest = sync.OnceValues(func() (*manifest, error) {
@@ -73,10 +76,37 @@ type Service struct {
 	Description string
 }
 
-// NeedsDeploy reports whether dir lacks a bundled file or has another version of it.
+// NeedsDeploy reports whether dir lacks a bundled file (including the extra
+// files) or has another version of it.
 func NeedsDeploy(dir string) (bool, error) {
-	stale, err := staleFiles(dir)
-	return len(stale) > 0, err
+	m, err := loadManifest()
+	if err != nil {
+		return false, err
+	}
+	return len(stale(dir, m.Files))+len(stale(dir, m.Extras)) > 0, nil
+}
+
+// ExtraFiles returns the names of the bundled install.extraFiles.
+func ExtraFiles() []string {
+	m, err := loadManifest()
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, f := range m.Extras {
+		names = append(names, f.Name)
+	}
+	return names
+}
+
+func stale(dir string, files []bundleFile) []bundleFile {
+	var out []bundleFile
+	for _, f := range files {
+		if !strings.EqualFold(fileSHA256(filepath.Join(dir, f.Name)), f.SHA256) {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func staleFiles(dir string) ([]string, error) {
@@ -84,13 +114,47 @@ func staleFiles(dir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var stale []string
-	for _, f := range m.Files {
-		if !strings.EqualFold(fileSHA256(filepath.Join(dir, f.Name)), f.SHA256) {
-			stale = append(stale, f.Name)
-		}
+	var names []string
+	for _, f := range stale(dir, m.Files) {
+		names = append(names, f.Name)
 	}
-	return stale, nil
+	return names, nil
+}
+
+// DeployExtras writes the bundled install.extraFiles that differ into dir.
+// A running copy is renamed out of the way (Windows allows that) and its
+// .old file removed on a later run.
+func DeployExtras(dir string, logf func(string, ...any)) error {
+	m, err := loadManifest()
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, f := range m.Extras {
+		os.Remove(filepath.Join(dir, f.Name+".old"))
+	}
+	for _, f := range stale(dir, m.Extras) {
+		dst := filepath.Join(dir, f.Name)
+		if err := extract(f.Name, f.SHA256, dst+".new"); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if _, err := os.Stat(dst); err == nil {
+			if err := os.Rename(dst, dst+".old"); err != nil {
+				os.Remove(dst + ".new")
+				errs = append(errs, err)
+				continue
+			}
+		}
+		if err := os.Rename(dst+".new", dst); err != nil {
+			os.Rename(dst+".old", dst)
+			errs = append(errs, err)
+			continue
+		}
+		os.Remove(dst + ".old")
+		logf("installed %s", f.Name)
+	}
+	return errors.Join(errs...)
 }
 
 // Deploy writes the bundled files that differ into dir, then makes sure the

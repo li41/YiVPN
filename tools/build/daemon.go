@@ -33,7 +33,8 @@ const (
 // bundleManifest must match the one read by internal/tsdeploy.
 type bundleManifest struct {
 	Version string       `json:"version"`
-	Files   []bundleFile `json:"files"`
+	Files   []bundleFile `json:"files"`  // tailscaled and what it needs
+	Extras  []bundleFile `json:"extras"` // install.extraFiles
 }
 
 type bundleFile struct {
@@ -42,8 +43,8 @@ type bundleFile struct {
 }
 
 // buildDaemon builds the rebranded tailscaled from the tailscale.com version
-// in go.mod and writes it, wintun.dll and the license notices into
-// internal/tsdeploy/bundle, which the GUI EXE embeds.
+// in go.mod and writes it, wintun.dll, the license notices and
+// install.extraFiles into internal/tsdeploy/bundle, which the GUI EXE embeds.
 func buildDaemon(cfg *brand.Config, cfgDir string) error {
 	tsDir, tsVer, err := tailscaleModule()
 	if err != nil {
@@ -104,8 +105,18 @@ func buildDaemon(cfg *brand.Config, cfgDir string) error {
 		return err
 	}
 
+	var extras []string
+	for _, p := range cfg.Install.ExtraFiles {
+		p = resolve(cfgDir, p)
+		if _, err := os.Stat(p); err != nil {
+			return fmt.Errorf("install.extraFiles：找不到 %s", p)
+		}
+		step("加入額外檔案 %s", p)
+		extras = append(extras, p)
+	}
+
 	step("寫入 %s", bundleDir)
-	return writeBundle(tsVer, daemon, wintun, notices)
+	return writeBundle(tsVer, []string{daemon, wintun, notices}, extras)
 }
 
 // tailscaleModule returns the source directory and version of the
@@ -198,32 +209,46 @@ func fetchWintun(dir string) (dll string, license []byte, err error) {
 	return dll, license, nil
 }
 
-// writeBundle gzips files into bundleDir and lists them in manifest.json.
-// README.md stays; everything else there is regenerated.
-func writeBundle(tsVer string, files ...string) error {
+// writeBundle gzips files and extras into bundleDir and lists them in
+// manifest.json. README.md stays; everything else there is regenerated.
+func writeBundle(tsVer string, files, extras []string) error {
 	entries, _ := os.ReadDir(bundleDir)
 	for _, e := range entries {
 		if e.Name() != "README.md" {
 			os.Remove(filepath.Join(bundleDir, e.Name()))
 		}
 	}
-	m := bundleManifest{Version: tsVer}
-	for _, f := range files {
+	add := func(f string) (bundleFile, error) {
 		b, err := os.ReadFile(f)
 		if err != nil {
-			return err
+			return bundleFile{}, err
 		}
 		name := filepath.Base(f)
 		var gz bytes.Buffer
 		zw, _ := gzip.NewWriterLevel(&gz, gzip.BestCompression)
 		zw.Write(b)
 		if err := zw.Close(); err != nil {
-			return err
+			return bundleFile{}, err
 		}
 		if err := os.WriteFile(filepath.Join(bundleDir, name+".gz"), gz.Bytes(), 0o644); err != nil {
+			return bundleFile{}, err
+		}
+		return bundleFile{Name: name, SHA256: sha256Hex(b)}, nil
+	}
+	m := bundleManifest{Version: tsVer, Files: []bundleFile{}, Extras: []bundleFile{}}
+	for _, f := range files {
+		bf, err := add(f)
+		if err != nil {
 			return err
 		}
-		m.Files = append(m.Files, bundleFile{Name: name, SHA256: sha256Hex(b)})
+		m.Files = append(m.Files, bf)
+	}
+	for _, f := range extras {
+		bf, err := add(f)
+		if err != nil {
+			return err
+		}
+		m.Extras = append(m.Extras, bf)
 	}
 	j, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {

@@ -47,6 +47,9 @@
     // 描述顯示在「服務」清單。服務的內部名稱是 appID。
     "serviceDisplayName": "Li41TEST Service",
     "serviceDescription": "Connects this computer to the Li41TEST network.",
+    // 安裝時一起放進安裝資料夾的其他檔案（路徑相對於本設定檔）。
+    // 會包進 EXE，GUI 更新時跟著更新；檔名不能跟 GUI、服務程式、wintun.dll 重複。
+    "extraFiles": ["Yi.exe"],
   },
 
   // tailscaled 由 build.cmd 從 go.mod 裡的 tailscale.com 版本原始碼編譯，包進 GUI 的 EXE，

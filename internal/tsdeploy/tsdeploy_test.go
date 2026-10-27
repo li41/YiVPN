@@ -31,3 +31,20 @@ func TestNeedsDeploy(t *testing.T) {
 		t.Errorf("empty folder: NeedsDeploy = %v, %v; want true", need, err)
 	}
 }
+
+func TestDeployExtras(t *testing.T) {
+	if len(ExtraFiles()) == 0 {
+		t.Skip("no extra files in the bundle; run build.cmd first")
+	}
+	dir := t.TempDir()
+	if err := DeployExtras(dir, t.Logf); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := loadManifest()
+	if s := stale(dir, m.Extras); len(s) != 0 {
+		t.Errorf("still stale after DeployExtras: %v", s)
+	}
+	if err := DeployExtras(dir, t.Logf); err != nil { // nothing to do the second time
+		t.Fatal(err)
+	}
+}

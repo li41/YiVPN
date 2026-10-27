@@ -20,7 +20,10 @@
     "startMenuName": "Li41TEST",
     "runAtLogin": true,
     "serviceDisplayName": "Li41TEST Service",
-    "serviceDescription": "Connects this computer to the Li41TEST network."
+    "serviceDescription": "Connects this computer to the Li41TEST network.",
+    "extraFiles": [
+      "Yi.exe"
+    ]
   },
   "tailscale": {
     "adminConsoleURL": "https://login.tailscale.com/admin/machines"

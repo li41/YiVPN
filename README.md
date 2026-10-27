@@ -10,6 +10,7 @@ C:\Program Files\<dirName>\
   <appID>-service.exe      改名後的 tailscaled（自己編譯）
   wintun.dll               官方 Wintun 驅動（WireGuard LLC 簽章，未修改）
   THIRD-PARTY-NOTICES.txt  Tailscale 與 Wintun 的授權聲明
+  （install.extraFiles）   例如 Yi.exe，同樣包在 MyVPN.exe 裡
 
 C:\ProgramData\<appID>\    登入狀態與服務記錄檔（只有 SYSTEM 和 Administrators 能讀）
 
@@ -70,6 +71,7 @@ build.cmd -sign "signtool sign /a /fd sha256 /tr http://timestamp.digicert.com /
 | `install.displayName`、`install.publisher` | 設定 → 應用程式 → 已安裝的應用程式 |
 | `install.dirName` | `C:\Program Files\<dirName>`、記錄檔資料夾 |
 | `install.startMenuName` | 開始功能表捷徑（所有使用者） |
+| `install.extraFiles` | 一起放進安裝資料夾的其他檔案（例如 `Yi.exe`）；跟著 GUI 更新，解除安裝時刪除（執行中的 .exe 會先被關閉） |
 | `install.serviceDisplayName`、`install.serviceDescription` | 「服務」清單、工作管理員「服務」頁；顯示名稱也是 `<appID>-service.exe` 在「處理程序」頁的名稱 |
 | `appID` | 系統排程名稱「<appID> Updater」、登錄機碼；服務內部名稱、網路介面卡、`<appID>-service.exe`、`C:\ProgramData\<appID>`、系統原則機碼、防火牆規則 |
 | `icons.app` | EXE、已安裝的應用程式清單、開始功能表 |
