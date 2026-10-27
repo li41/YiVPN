@@ -1,0 +1,35 @@
+{
+  "appID": "MyVPN",
+  "productName": "MyVPN",
+  "exeName": "MyVPN.exe",
+  "fileDescription": "MyVPN",
+  "companyName": "My Company",
+  "copyright": "Copyright © 2026 My Company",
+  "version": "1.0.0",
+  "icons": {
+    "app": "assets/app.ico",
+    "connected": "assets/tray-connected.ico",
+    "disconnected": "assets/tray-disconnected.ico",
+    "connecting": "assets/tray-connecting.ico",
+    "exitNode": "assets/tray-exitnode.ico"
+  },
+  "install": {
+    "displayName": "MyVPN",
+    "publisher": "My Company",
+    "dirName": "MyVPN",
+    "startMenuName": "MyVPN",
+    "runAtLogin": true,
+    "serviceDisplayName": "MyVPN Service",
+    "serviceDescription": "Connects this computer to the MyVPN network."
+  },
+  "tailscale": {
+    "autoUpdate": true,
+    "track": "stable",
+    "adminConsoleURL": "https://login.tailscale.com/admin/machines"
+  },
+  "update": {
+    "baseURL": "",
+    "checkInterval": "6h",
+    "signerSubject": ""
+  }
+}

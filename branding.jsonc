@@ -1,0 +1,70 @@
+// 品牌設定檔：打包（build.cmd）時會讀這個檔，把名稱、圖示、版本資訊寫進 EXE。
+// 改完後重新執行 build.cmd 即可，不需要改任何程式碼。
+// 格式是 JSON，但允許 // 註解與結尾逗號。
+{
+  // 唯一識別碼：登錄機碼、開機啟動項目、單一執行個體鎖都用它。
+  // 只能用英數字、底線、連字號。發布後不要再改，否則舊版會被當成另一個程式。
+  "appID": "Li41TEST",
+
+  // 產品名稱：系統匣提示文字、選單、「關於」視窗。
+  "productName": "Li41TEST",
+
+  // 執行檔名稱：工作管理員「詳細資料」頁、啟動資料夾裡看到的檔名。
+  "exeName": "Li41TEST.exe",
+
+  // 工作管理員「處理程序」頁、「啟動應用程式」頁、工作列「其他系統匣圖示」顯示的名稱。
+  "fileDescription": "Li41TEST",
+
+  "companyName": "NAER7098",
+  "copyright": "Copyright © 2026 NAER7098",
+
+  // 版本號（x.y.z）。GUI 自動更新會拿這個比對新舊。
+  "version": "1.0.0",
+
+  // 圖示（.ico 檔，建議包含 16、24、32、48、256 像素）。路徑相對於本設定檔。
+  "icons": {
+    "app": "assets/app.ico",                       // EXE 圖示、已安裝的應用程式清單、開始功能表
+    "connected": "assets/app.ico",                 // 系統匣：已連線
+    "disconnected": "assets/app.ico",              // 系統匣：未連線
+    "connecting": "assets/app.ico",                // 系統匣：連線中
+    "exitNode": "assets/app.ico",                  // 系統匣：正在使用出口節點
+  },
+
+  "install": {
+    // 「設定 > 應用程式 > 已安裝的應用程式」裡顯示的名稱。
+    "displayName": "Li41TEST",
+    "publisher": "NAER7098",
+    // 安裝資料夾：C:\Program Files\<dirName>（GUI 與 tailscaled 都放這裡）
+    "dirName": "Li41TEST",
+    // 開始功能表捷徑名稱（所有使用者）。
+    "startMenuName": "Li41TEST",
+    // 登入 Windows 時自動啟動 GUI（同官方行為，所有使用者）。
+    "runAtLogin": true,
+    // 「服務」清單裡 tailscaled 顯示的名稱與描述。
+    // 注意：服務的內部名稱固定是 Tailscale（tailscaled 寫死的），只有顯示名稱能改。
+    "serviceDisplayName": "Li41TEST Service",
+    "serviceDescription": "Connects this computer to the Li41TEST network.",
+  },
+
+  "tailscale": {
+    // 自動更新 tailscaled：系統排程會定期從 Tailscale 官方套件伺服器取最新版，
+    // 驗證官方數位簽章後替換。不經過官方 MSI，所以「已安裝的應用程式」不會出現 Tailscale。
+    // 設成 false 時只有在選單按「Update available」才更新。
+    "autoUpdate": true,
+    // 更新頻道：stable（穩定版）或 unstable（測試版）。
+    "track": "stable",
+    // 選單「Admin console...」開啟的網址。
+    "adminConsoleURL": "https://login.tailscale.com/admin/machines",
+  },
+
+  // GUI 本身的自動更新（由同一個系統排程執行）。留空 baseURL 則停用。
+  // 打包後把 dist\ 裡的 EXE 與 latest.json 上傳到同一個位置即可。
+  // 用 GitHub Releases 的話填：https://github.com/<owner>/<repo>/releases/latest/download
+  "update": {
+    "baseURL": "",
+    // 系統排程檢查更新的間隔（tailscaled 與 GUI 共用；Go duration 格式，例如 30m、6h）。
+    "checkInterval": "6h",
+    // 若 EXE 有程式碼簽章，填簽章主體名稱（CN），更新時會驗證；留空則只驗 SHA-256。
+    "signerSubject": "",
+  },
+}
