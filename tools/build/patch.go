@@ -38,6 +38,11 @@ func patches(cfg *brand.Config) []patch {
 		{"cmd/tailscaled/tailscaled_windows.go", `const serviceName = "Tailscale"`, `const serviceName = ` + q(id), 1},
 		{"cmd/tailscaled/tailscaled.go", `return "Tailscale"`, `return ` + q(id), 1},
 		{"cmd/tailscaled/install_windows.go", `"Connects this computer to others on the Tailscale network."`, q(cfg.Install.ServiceDescription), 1},
+		// The state file's folder is only used as VarRoot (TLS certs for
+		// cert/serve/funnel, Taildrop) when it has the expected name.
+		{"cmd/tailscaled/tailscaled.go", `strings.EqualFold(filepath.Base(dir), "tailscale")`, `strings.EqualFold(filepath.Base(dir), ` + q(id) + `)`, 1},
+		// The CLI looks for this process to explain why it can't connect.
+		{"cmd/tailscale/cli/diag.go", `"tailscaled.exe"`, q(cfg.DaemonExe()), 1},
 
 		// Everything else under %ProgramData%\Tailscale and %LocalAppData%\Tailscale.
 		{"cmd/tailscaled/syspolicy.go", `"Tailscale"`, q(id), 1},
@@ -54,6 +59,8 @@ func patches(cfg *brand.Config) []patch {
 		{"net/tstun/tun_windows.go", `"Tailscale"`, q(id), 1},
 		{"net/tstun/tun_windows.go", `"{37217669-42da-4657-a55b-0d995d328250}"`, q(cfg.AdapterGUID()), 1},
 		{"net/tshttpproxy/tshttpproxy_windows.go", `"Tailscale"`, q(id), 1},
+		// Captive portal checks skip our own adapter by its name.
+		{"net/captivedetection/captivedetection.go", `[]string{"tailscale", `, `[]string{"tailscale", ` + q(strings.ToLower(id)) + `, `, 1},
 
 		// System policy (HKLM/HKCU\SOFTWARE\Policies\<id>) and the legacy key.
 		{"util/syspolicy/source/policy_store_windows.go", "`Policies\\Tailscale`", q(`Policies\` + id), 1},
