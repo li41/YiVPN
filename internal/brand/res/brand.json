@@ -1,34 +1,32 @@
 {
-  "appID": "MyVPN",
-  "productName": "MyVPN",
-  "exeName": "MyVPN.exe",
-  "fileDescription": "MyVPN",
-  "companyName": "My Company",
-  "copyright": "Copyright © 2026 My Company",
+  "appID": "Li41TEST",
+  "productName": "Li41TEST",
+  "exeName": "Li41TEST.exe",
+  "fileDescription": "Li41TEST",
+  "companyName": "Li41TEST",
+  "copyright": "Copyright © 2026 Li41TEST",
   "version": "1.0.0",
   "icons": {
     "app": "assets/app.ico",
-    "connected": "assets/tray-connected.ico",
-    "disconnected": "assets/tray-disconnected.ico",
-    "connecting": "assets/tray-connecting.ico",
-    "exitNode": "assets/tray-exitnode.ico"
+    "connected": "assets/app.ico",
+    "disconnected": "assets/app.ico",
+    "connecting": "assets/app.ico",
+    "exitNode": "assets/app.ico"
   },
   "install": {
-    "displayName": "MyVPN",
-    "publisher": "My Company",
-    "dirName": "MyVPN",
-    "startMenuName": "MyVPN",
+    "displayName": "Li41TEST",
+    "publisher": "Li41TEST",
+    "dirName": "Li41TEST",
+    "startMenuName": "Li41TEST",
     "runAtLogin": true,
-    "serviceDisplayName": "MyVPN Service",
-    "serviceDescription": "Connects this computer to the MyVPN network."
+    "serviceDisplayName": "Li41TEST Service",
+    "serviceDescription": "Connects this computer to the Li41TEST network."
   },
   "tailscale": {
-    "autoUpdate": true,
-    "track": "stable",
     "adminConsoleURL": "https://login.tailscale.com/admin/machines"
   },
   "update": {
-    "baseURL": "",
+    "baseURL": "https://github.com/li41/YiVPN/releases/latest/download",
     "checkInterval": "6h",
     "signerSubject": ""
   }

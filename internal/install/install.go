@@ -1,9 +1,9 @@
 //go:build windows
 
-// Package install installs the GUI and tailscaled machine-wide into
-// %ProgramFiles%\<dirName>, registers the SYSTEM updater task, and removes
-// everything again on uninstall. The official Tailscale MSI is never
-// installed, so Installed apps only lists our product.
+// Package install installs the GUI and the tailscaled bundled in it
+// machine-wide into %ProgramFiles%\<dirName>, registers the SYSTEM updater
+// task, and removes everything again on uninstall. The official Tailscale MSI
+// is never installed, so Installed apps only lists our product.
 package install
 
 import (
@@ -34,7 +34,7 @@ const (
 	FlagQuiet             = "--quiet"
 	FlagUninstall         = "--uninstall"
 	FlagUpdate            = "--update"             // run by the scheduled task as SYSTEM
-	FlagRegister          = "--register"           // internal: refresh registry after a GUI update
+	FlagRegister          = "--register"           // internal: deploy tailscaled and refresh registry after a GUI update
 	FlagInstallElevated   = "--install-elevated"   // internal
 	FlagUninstallElevated = "--uninstall-elevated" // internal
 )
@@ -42,7 +42,8 @@ const (
 const (
 	uninstallRoot = `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\`
 	runKey        = `SOFTWARE\Microsoft\Windows\CurrentVersion\Run`
-	tsPolicyKey   = `SOFTWARE\Policies\Tailscale`
+	// Earlier versions turned off the official updater here.
+	legacyPolicyKey = `SOFTWARE\Policies\Tailscale`
 )
 
 // Dir is the install directory, %ProgramFiles%\<dirName>.
@@ -62,6 +63,12 @@ func MachineLogDir(c *brand.Config) string {
 	return filepath.Join(os.Getenv("ProgramData"), c.Install.DirName)
 }
 
+// StateDir is where tailscaled keeps the login state and its logs
+// (%ProgramData%\<appID>, hard-coded into it by tools/build).
+func StateDir(c *brand.Config) string {
+	return filepath.Join(os.Getenv("ProgramData"), c.ServiceName())
+}
+
 // UserLogDir holds the GUI log of the current user.
 func UserLogDir(c *brand.Config) string {
 	base, err := windows.KnownFolderPath(windows.FOLDERID_LocalAppData, 0)
@@ -78,7 +85,22 @@ func IsInstalledCopy(c *brand.Config) bool {
 }
 
 func serviceSettings(c *brand.Config) tsdeploy.Service {
-	return tsdeploy.Service{DisplayName: c.Install.ServiceDisplayName, Description: c.Install.ServiceDescription}
+	return tsdeploy.Service{
+		Name:        c.ServiceName(),
+		Exe:         c.DaemonExe(),
+		DisplayName: c.Install.ServiceDisplayName,
+		Description: c.Install.ServiceDescription,
+	}
+}
+
+// deployDaemon replaces the official tailscaled that earlier versions
+// deployed, then installs or updates the one bundled in this EXE.
+func deployDaemon(c *brand.Config) error {
+	if err := tsdeploy.RemoveLegacy(Dir(c), StateDir(c), log.Printf); err != nil {
+		return err
+	}
+	unblockOfficialUpdater()
+	return tsdeploy.Deploy(Dir(c), serviceSettings(c), log.Printf)
 }
 
 // Setup runs when the user starts the downloaded EXE. It elevates once and
@@ -112,9 +134,6 @@ func IsSilent(err error) bool { return errors.Is(err, errSilent) }
 
 // InstallElevated performs the installation. Needs administrator rights.
 func InstallElevated(c *brand.Config, quiet bool) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
-
 	if err := removeOfficialMSI(c, quiet); err != nil {
 		return err
 	}
@@ -145,45 +164,41 @@ func InstallElevated(c *brand.Config, quiet bool) error {
 		os.Remove(dst + ".old")
 	}
 
-	latest, err := tsdeploy.FetchLatest(ctx, c.Tailscale.Track)
-	if err != nil {
-		return err
-	}
-	if latest.NeedsUpdate(dir) {
-		if err := tsdeploy.Deploy(ctx, latest, dir, serviceSettings(c), log.Printf); err != nil {
-			return err
-		}
-	} else if err := tsdeploy.EnsureService(dir, serviceSettings(c)); err != nil {
-		return err
-	}
-
-	if err := blockOfficialUpdater(); err != nil {
+	if err := deployDaemon(c); err != nil {
 		return err
 	}
 	if err := Register(c, dst); err != nil {
 		return err
 	}
+	// tailscaled is updated together with the GUI, so without baseURL
+	// there is nothing to check for.
 	interval := c.CheckInterval()
-	if !c.Tailscale.AutoUpdate && c.Update.BaseURL == "" {
+	if c.Update.BaseURL == "" {
 		interval = 0
 	}
 	if err := task.Register(c.AppID, "Keeps "+c.ProductName+" up to date.", dst, FlagUpdate, interval); err != nil {
 		return err
 	}
-	log.Printf("installed %s %s with tailscaled %s", c.ProductName, c.Version, tsdeploy.InstalledVersion(dir))
+	log.Printf("installed %s %s with %s %s", c.ProductName, c.Version, c.DaemonExe(), tsdeploy.FileVersion(filepath.Join(dir, c.DaemonExe())))
 	return nil
 }
 
-// blockOfficialUpdater turns off tailscaled's built-in updater. It can only
-// install the official MSI, which would bring back the Installed apps entry;
-// our scheduled task updates tailscaled instead.
-func blockOfficialUpdater() error {
-	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, tsPolicyKey, registry.SET_VALUE)
-	if err != nil {
-		return err
+// unblockOfficialUpdater removes the InstallUpdates=never policy that earlier
+// versions set for the official tailscaled, so it doesn't affect an official
+// Tailscale installed later. Ours is built without that updater.
+func unblockOfficialUpdater() {
+	if k, err := registry.OpenKey(registry.LOCAL_MACHINE, legacyPolicyKey, registry.QUERY_VALUE|registry.SET_VALUE); err == nil {
+		if v, _, _ := k.GetStringValue("InstallUpdates"); v == "never" {
+			k.DeleteValue("InstallUpdates")
+		}
+		k.Close()
 	}
-	defer k.Close()
-	return k.SetStringValue("InstallUpdates", "never")
+}
+
+// Refresh runs in the new EXE after a GUI self-update (as SYSTEM): it
+// deploys the tailscaled bundled in it and refreshes Installed apps.
+func Refresh(c *brand.Config) error {
+	return errors.Join(deployDaemon(c), Register(c, Exe(c)))
 }
 
 // Register writes the Installed apps entry, the Run-at-login entry and the
@@ -342,15 +357,10 @@ func UninstallElevated(c *brand.Config) error {
 	if err := task.Delete(c.AppID); err != nil {
 		errs = append(errs, err)
 	}
-	if err := tsdeploy.Remove(dir); err != nil {
+	if err := tsdeploy.Remove(dir, serviceSettings(c)); err != nil {
 		errs = append(errs, err)
 	}
-	if k, err := registry.OpenKey(registry.LOCAL_MACHINE, tsPolicyKey, registry.QUERY_VALUE|registry.SET_VALUE); err == nil {
-		if v, _, _ := k.GetStringValue("InstallUpdates"); v == "never" {
-			k.DeleteValue("InstallUpdates")
-		}
-		k.Close()
-	}
+	unblockOfficialUpdater()
 	if k, err := registry.OpenKey(registry.LOCAL_MACHINE, uninstallRoot+c.AppID, registry.QUERY_VALUE); err == nil {
 		if lnk, _, err := k.GetStringValue("ShortcutPath"); err == nil {
 			os.Remove(lnk)
@@ -365,7 +375,9 @@ func UninstallElevated(c *brand.Config) error {
 	registry.DeleteKey(registry.LOCAL_MACHINE, uninstallRoot+c.AppID)
 
 	// The running EXE can't delete itself: remove everything else now and
-	// let cmd.exe remove the folder once we have exited.
+	// let cmd.exe remove the folder once we have exited. Only our own logs
+	// go from MachineLogDir: it may also be StateDir, whose login state is
+	// kept like the official client does.
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
 		p := filepath.Join(dir, e.Name())
@@ -373,19 +385,21 @@ func UninstallElevated(c *brand.Config) error {
 			os.RemoveAll(p)
 		}
 	}
+	logs := MachineLogDir(c)
 	cmd := exec.Command(filepath.Join(os.Getenv("SystemRoot"), `System32\cmd.exe`))
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
 		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
-		CmdLine:       fmt.Sprintf(`/c ping -n 4 127.0.0.1 >nul & rmdir /s /q "%s" & rmdir /s /q "%s"`, dir, MachineLogDir(c)),
+		CmdLine: fmt.Sprintf(`/c ping -n 4 127.0.0.1 >nul & rmdir /s /q "%s" & del /q "%s\install.log*" "%s\updater.log*" & rmdir "%s"`,
+			dir, logs, logs, logs),
 	}
 	cmd.Start()
 	log.Printf("uninstalled (errors: %v)", errors.Join(errs...))
 	return errors.Join(errs...)
 }
 
-// RunUpdate is the scheduled task's job (as SYSTEM): update tailscaled from
-// pkgs.tailscale.com and the GUI from update.baseURL.
+// RunUpdate is the scheduled task's job (as SYSTEM): update the GUI from
+// update.baseURL. The new GUI brings its tailscaled along (see Refresh).
 func RunUpdate(c *brand.Config) error {
 	if !winx.SingleInstance(`Global\` + c.AppID + "-update") {
 		log.Print("another update is running")
@@ -393,22 +407,15 @@ func RunUpdate(c *brand.Config) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
 	defer cancel()
-	dir := Dir(c)
 	// Left by the previous GUI update; deletable once no old GUI runs it.
 	update.CleanupOld(Exe(c))
 
 	var errs []error
-	latest, err := tsdeploy.FetchLatest(ctx, c.Tailscale.Track)
-	switch {
-	case err != nil:
-		errs = append(errs, err)
-	case latest.NeedsUpdate(dir):
-		log.Printf("tailscaled %s -> %s", tsdeploy.InstalledVersion(dir), latest.Version)
-		if err := tsdeploy.Deploy(ctx, latest, dir, serviceSettings(c), log.Printf); err != nil {
+	// Normally done by Refresh already; this repairs a failed or damaged deployment.
+	if need, err := tsdeploy.NeedsDeploy(Dir(c)); err != nil || need {
+		if err := deployDaemon(c); err != nil {
 			errs = append(errs, err)
 		}
-	default:
-		log.Printf("tailscaled %s is up to date", latest.Version)
 	}
 
 	if base := c.Update.BaseURL; base != "" {
@@ -437,8 +444,8 @@ func updateGUI(ctx context.Context, c *brand.Config, base string) error {
 	if err := update.Apply(ctx, base, m, exe, verify); err != nil {
 		return err
 	}
-	// Let the new version refresh Installed apps; running GUIs notice the
-	// changed EXE and restart themselves.
+	// Let the new version deploy its tailscaled and refresh Installed apps;
+	// running GUIs notice the changed EXE and restart themselves.
 	return exec.Command(exe, FlagRegister).Start()
 }
 

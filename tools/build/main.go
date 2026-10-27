@@ -3,12 +3,15 @@
 //	go run ./tools/build [-config branding.jsonc] [-arch amd64|arm64]
 //
 // It:
-//  1. copies the icons and a normalized brand.json into internal/brand/generated
+//  1. copies the icons and a normalized brand.json into internal/brand/res
 //     (embedded into the binary for the tray icon, menu text, install names);
-//  2. writes cmd/tray/rsrc_windows_<arch>.syso with the EXE icon, version info
+//  2. builds tailscaled from the tailscale.com source in the module cache,
+//     with every "Tailscale" name Windows shows replaced by appID (see
+//     patch.go), and bundles it with wintun.dll into internal/tsdeploy/bundle;
+//  3. writes cmd/tray/rsrc_windows_<arch>.syso with the EXE icon, version info
 //     (FileDescription, ProductName, CompanyName...) and manifest;
-//  3. runs go build with -o dist/<exeName> (and signs it if -sign is given);
-//  4. writes dist/latest.json for the GUI self-updater.
+//  4. runs go build with -o dist/<exeName> (and signs it if -sign is given);
+//  5. writes dist/latest.json for the GUI self-updater.
 package main
 
 import (
@@ -47,6 +50,9 @@ func main() {
 	log.SetFlags(0)
 	flag.Parse()
 
+	if *arch != "amd64" && *arch != "arm64" {
+		log.Fatalf("-arch 只能是 amd64 或 arm64")
+	}
 	cfg, err := brand.Load(*configPath)
 	if err != nil {
 		log.Fatalf("設定檔錯誤：\n%v", err)
@@ -55,6 +61,8 @@ func main() {
 
 	step("寫入品牌資料 %s", genDir)
 	must(writeGenerated(cfg, cfgDir))
+
+	must(buildDaemon(cfg, cfgDir))
 
 	syso := filepath.Join(mainPkg, "rsrc_windows_"+*arch+".syso")
 	step("產生 Windows 資源 %s", syso)
@@ -109,9 +117,37 @@ func writeGenerated(cfg *brand.Config, cfgDir string) error {
 }
 
 func writeSyso(cfg *brand.Config, cfgDir, path string) error {
+	// Only one architecture's .syso may be present, or the linker sees
+	// duplicate resources when cross-compiling.
+	old, _ := filepath.Glob(filepath.Join(mainPkg, "rsrc_windows_*.syso"))
+	for _, o := range old {
+		os.Remove(o)
+	}
+	return writeResources(path, resources{
+		icon:        resolve(cfgDir, cfg.Icons.App),
+		version:     cfg.Version,
+		description: cfg.FileDescription,
+		product:     cfg.ProductName,
+		company:     cfg.CompanyName,
+		copyright:   cfg.Copyright,
+		filename:    cfg.ExeName,
+		internal:    cfg.AppID,
+		gui:         true,
+	})
+}
+
+// resources is what an EXE shows in Explorer and Task Manager.
+type resources struct {
+	icon, version                            string
+	description, product, company, copyright string
+	filename, internal                       string
+	gui                                      bool // common controls v6 and DPI awareness
+}
+
+func writeResources(path string, r resources) error {
 	rs := &winres.ResourceSet{}
 
-	f, err := os.Open(resolve(cfgDir, cfg.Icons.App))
+	f, err := os.Open(r.icon)
 	if err != nil {
 		return err
 	}
@@ -126,15 +162,15 @@ func writeSyso(cfg *brand.Config, cfgDir, path string) error {
 	}
 
 	vi := version.Info{}
-	vi.SetFileVersion(cfg.Version)
-	vi.SetProductVersion(cfg.Version)
+	vi.SetFileVersion(r.version)
+	vi.SetProductVersion(r.version)
 	for k, v := range map[string]string{
-		version.FileDescription:  cfg.FileDescription,
-		version.ProductName:      cfg.ProductName,
-		version.CompanyName:      cfg.CompanyName,
-		version.LegalCopyright:   cfg.Copyright,
-		version.OriginalFilename: cfg.ExeName,
-		version.InternalName:     cfg.AppID,
+		version.FileDescription:  r.description,
+		version.ProductName:      r.product,
+		version.CompanyName:      r.company,
+		version.LegalCopyright:   r.copyright,
+		version.OriginalFilename: r.filename,
+		version.InternalName:     r.internal,
 	} {
 		if v == "" {
 			continue
@@ -145,20 +181,17 @@ func writeSyso(cfg *brand.Config, cfgDir, path string) error {
 	}
 	rs.SetVersionInfo(vi)
 
-	rs.SetManifest(winres.AppManifest{
-		Description:         cfg.ProductName,
-		Compatibility:       winres.Win10AndAbove,
-		ExecutionLevel:      winres.AsInvoker,
-		DPIAwareness:        winres.DPIPerMonitorV2,
-		UseCommonControlsV6: true,
-	})
-
-	// Only one architecture's .syso may be present, or the linker sees
-	// duplicate resources when cross-compiling.
-	old, _ := filepath.Glob(filepath.Join(mainPkg, "rsrc_windows_*.syso"))
-	for _, o := range old {
-		os.Remove(o)
+	m := winres.AppManifest{
+		Description:    r.product,
+		Compatibility:  winres.Win10AndAbove,
+		ExecutionLevel: winres.AsInvoker,
 	}
+	if r.gui {
+		m.DPIAwareness = winres.DPIPerMonitorV2
+		m.UseCommonControlsV6 = true
+	}
+	rs.SetManifest(m)
+
 	out, err := os.Create(path)
 	if err != nil {
 		return err

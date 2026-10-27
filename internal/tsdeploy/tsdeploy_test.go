@@ -5,14 +5,14 @@ package tsdeploy
 import "testing"
 
 func TestSamePath(t *testing.T) {
-	exe := `C:\Program Files\MyVPN\tailscaled.exe`
+	exe := `C:\Program Files\MyVPN\MyVPN-service.exe`
 	for _, tc := range []struct {
 		cmdline string
 		want    bool
 	}{
-		{`"C:\Program Files\MyVPN\tailscaled.exe"`, true},
-		{`"c:\program files\myvpn\TAILSCALED.EXE" --tun x`, true},
-		{`C:\Program Files\MyVPN\tailscaled.exe`, true},
+		{`"C:\Program Files\MyVPN\MyVPN-service.exe"`, true},
+		{`"c:\program files\myvpn\MYVPN-SERVICE.EXE" --tun x`, true},
+		{`C:\Program Files\MyVPN\MyVPN-service.exe`, true},
 		{`"C:\Program Files\Tailscale\tailscaled.exe"`, false},
 		{``, false},
 	} {
@@ -22,9 +22,12 @@ func TestSamePath(t *testing.T) {
 	}
 }
 
-func TestNeedsUpdate(t *testing.T) {
-	dir := t.TempDir() // no tailscaled.exe
-	if !(&Latest{Version: "1.0.0"}).NeedsUpdate(dir) {
-		t.Error("missing tailscaled must need an update")
+func TestNeedsDeploy(t *testing.T) {
+	if _, err := loadManifest(); err != nil {
+		t.Skip("no bundle; run build.cmd first")
+	}
+	need, err := NeedsDeploy(t.TempDir())
+	if err != nil || !need {
+		t.Errorf("empty folder: NeedsDeploy = %v, %v; want true", need, err)
 	}
 }

@@ -2,8 +2,8 @@
 
 // Command tray is the branded Tailscale GUI. The same EXE is also the
 // installer, the uninstaller and (run as SYSTEM by a scheduled task) the
-// updater for itself and tailscaled. Build it with tools/build so the names
-// and icons from branding.jsonc are applied.
+// updater for itself and the tailscaled bundled in it. Build it with
+// tools/build so the names and icons from branding.jsonc are applied.
 package main
 
 import (
@@ -42,7 +42,7 @@ func main() {
 		return
 	case has(install.FlagRegister):
 		setupLog(install.MachineLogDir(cfg), "updater.log", cfg)
-		exitOn(install.Register(cfg, install.Exe(cfg)))
+		exitOn(install.Refresh(cfg))
 		return
 	case has(install.FlagInstallElevated):
 		setupLog(install.MachineLogDir(cfg), "install.log", cfg)
@@ -106,7 +106,7 @@ func runGUI(cfg *brand.Config, args []string) {
 		return
 	}
 
-	app := tray.New(cfg, &local.Client{})
+	app := tray.New(cfg, &local.Client{Socket: cfg.DaemonPipe(), UseSocketOnly: true})
 	app.TriggerUpdate = func() error { return task.Run(cfg.AppID) }
 	if install.IsInstalledCopy(cfg) {
 		go restartWhenReplaced(app)

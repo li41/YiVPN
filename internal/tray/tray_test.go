@@ -20,7 +20,8 @@ import (
 
 func testApp() *App {
 	return New(&brand.Config{ProductName: "MyVPN", Version: "1.0.0",
-		Tailscale: brand.Tailscale{AutoUpdate: true, AdminConsoleURL: "https://example.com"}}, nil)
+		Tailscale: brand.Tailscale{AdminConsoleURL: "https://example.com"},
+		Update:    brand.Update{BaseURL: "https://example.com/releases"}}, nil)
 }
 
 // dump renders the menu model as indented text for assertions.
@@ -122,13 +123,18 @@ func TestModelRunning(t *testing.T) {
 		"This device: laptop (100.64.0.1)\n",
 		"Network devices\n  My devices\n    gateway\n  Tagged devices\n    server (offline)\n  Bob\n    bob-pc\n",
 		"Exit nodes\n  [ ] None\n  ---\n  Tailnet exit nodes (disabled)\n  [x] gateway\n  ---\n  [ ] Allow local network access\n",
-		"  [x] Use Tailscale DNS settings (disabled)\n",    // forced by policy
+		"  [x] Use MyVPN DNS settings (disabled)\n",        // forced by policy
 		"  [x] Automatically install updates (disabled)\n", // forced by branding
 		"Admin console...\n",
-		"Update available: 1.200.0\n",
+		"Check for updates\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("menu missing:\n%s", want)
+		}
+	}
+	for _, unwanted := range []string{"Tailscale", "Update available"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("menu should not mention %q", unwanted)
 		}
 	}
 	if strings.Contains(got, "Run exit node") {

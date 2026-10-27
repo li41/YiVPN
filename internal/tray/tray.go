@@ -373,8 +373,10 @@ func (a *App) model() []item {
 	if loggedIn && a.visible(pkey.AdminConsoleVisibility) {
 		m = append(m, action(txtAdminConsole, func(context.Context) { winx.OpenURL(a.cfg.Tailscale.AdminConsoleURL) }))
 	}
-	if cv := st.ClientVersion; cv != nil && !cv.RunningLatest && cv.LatestVersion != "" && a.visible(pkey.UpdateMenuVisibility) {
-		m = append(m, sep(), action(fmt.Sprintf(txtUpdateAvailable, cv.LatestVersion), a.installUpdate))
+	// st.ClientVersion is about official Tailscale releases; ours come
+	// from update.baseURL, which the updater task checks.
+	if a.cfg.Update.BaseURL != "" && a.visible(pkey.UpdateMenuVisibility) {
+		m = append(m, sep(), action(txtCheckUpdates, a.installUpdate))
 	}
 	return append(m, tail...)
 }
@@ -623,11 +625,11 @@ func (a *App) preferencesMenu() item {
 	pm := item{title: txtPreferences}
 
 	dns, dnsLocked := a.forcedBool(pkey.EnableTailscaleDNS, p.CorpDNS)
-	pm.children = append(pm.children, toggle(txtUseDNS, dns, dnsLocked, func(ctx context.Context, on bool) {
+	pm.children = append(pm.children, toggle(fmt.Sprintf(txtUseDNS, a.cfg.ProductName), dns, dnsLocked, func(ctx context.Context, on bool) {
 		a.editPrefs(ctx, &ipn.MaskedPrefs{Prefs: ipn.Prefs{CorpDNS: on}, CorpDNSSet: true})
 	}))
 	sub, subLocked := a.forcedBool(pkey.EnableTailscaleSubnets, p.RouteAll)
-	pm.children = append(pm.children, toggle(txtUseSubnets, sub, subLocked, func(ctx context.Context, on bool) {
+	pm.children = append(pm.children, toggle(fmt.Sprintf(txtUseSubnets, a.cfg.ProductName), sub, subLocked, func(ctx context.Context, on bool) {
 		a.editPrefs(ctx, &ipn.MaskedPrefs{Prefs: ipn.Prefs{RouteAll: on}, RouteAllSet: true})
 	}))
 	in, inLocked := a.forcedBool(pkey.EnableIncomingConnections, !p.ShieldsUp)
@@ -639,14 +641,14 @@ func (a *App) preferencesMenu() item {
 		a.editPrefs(ctx, &ipn.MaskedPrefs{Prefs: ipn.Prefs{ForceDaemon: on}, ForceDaemonSet: true})
 	}))
 	if a.visible(pkey.AutoUpdateVisibility) {
-		// Updates are done by our scheduled task (tailscaled's own updater
-		// would install the MSI), so this only shows the configured state.
-		pm.children = append(pm.children, item{title: txtAutoUpdate, check: true, checked: a.cfg.Tailscale.AutoUpdate, disabled: true})
+		// Updates are done by our scheduled task from update.baseURL, so
+		// this only shows the configured state.
+		pm.children = append(pm.children, item{title: txtAutoUpdate, check: true, checked: a.cfg.Update.BaseURL != "", disabled: true})
 	}
 	return pm
 }
 
-// ---- system policy helpers (HKLM\SOFTWARE\Policies\Tailscale) ----
+// ---- system policy helpers (HKLM\SOFTWARE\Policies\<appID>, read by tailscaled) ----
 
 func (a *App) policyString(k pkey.Key) (string, bool) {
 	if a.policy == nil {
@@ -724,7 +726,7 @@ func (a *App) about(context.Context) {
 		tsVer = a.st.Version
 	}
 	a.mu.Unlock()
-	text := fmt.Sprintf("%s %s\n\nTailscale %s\n\n%s", a.cfg.ProductName, a.cfg.Version, tsVer, a.cfg.Copyright)
+	text := fmt.Sprintf("%s %s\n\n%s %s\n\n%s", a.cfg.ProductName, a.cfg.Version, a.cfg.Install.ServiceDisplayName, tsVer, a.cfg.Copyright)
 	go winx.Info(fmt.Sprintf(txtAbout, a.cfg.ProductName), text)
 }
 

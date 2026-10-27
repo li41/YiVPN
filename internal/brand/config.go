@@ -51,8 +51,6 @@ type Install struct {
 }
 
 type Tailscale struct {
-	AutoUpdate      bool   `json:"autoUpdate"`
-	Track           string `json:"track"`
 	AdminConsoleURL string `json:"adminConsoleURL"`
 }
 
@@ -124,9 +122,6 @@ func (c *Config) applyDefaults() {
 	if c.Install.ServiceDisplayName == "" {
 		c.Install.ServiceDisplayName = c.ProductName + " Service"
 	}
-	if c.Tailscale.Track == "" {
-		c.Tailscale.Track = "stable"
-	}
 	if c.Tailscale.AdminConsoleURL == "" {
 		c.Tailscale.AdminConsoleURL = "https://login.tailscale.com/admin/machines"
 	}
@@ -161,9 +156,6 @@ func (c *Config) Validate() error {
 		if p == "" {
 			errs = append(errs, fmt.Errorf("icons 缺少 %s", strings.TrimSuffix(name, ".ico")))
 		}
-	}
-	if t := c.Tailscale.Track; t != "stable" && t != "unstable" {
-		errs = append(errs, errors.New("tailscale.track 只能是 stable 或 unstable"))
 	}
 	if u := c.Update.BaseURL; u != "" && !strings.HasPrefix(u, "https://") && !isLoopbackHTTP(u) {
 		errs = append(errs, errors.New("update.baseURL 必須是 https:// 開頭（測試時可用 http://127.0.0.1）"))

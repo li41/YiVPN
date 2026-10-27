@@ -1,144 +1,132 @@
 //go:build windows
 
-// Package tsdeploy installs and updates the official, Tailscale-signed
-// tailscaled without registering the Tailscale MSI with Windows Installer, so
-// no "Tailscale" entry appears in Installed apps.
-//
-// The latest MSI is downloaded from pkgs.tailscale.com, its Authenticode
-// signature is checked, and its files are unpacked with an administrative
-// install (msiexec /a), which copies files without installing anything.
-// tailscaled.exe then registers its own Windows service, the same way the MSI
-// does. Everything here needs administrator rights.
+// Package tsdeploy installs and updates tailscaled from the copy bundled
+// inside the GUI EXE. tools/build builds it from the Tailscale source with
+// every Windows-visible "Tailscale" name replaced by appID, so updating the
+// GUI also updates tailscaled and nothing is ever downloaded from Tailscale.
+// Everything here needs administrator rights.
 package tsdeploy
 
 import (
-	"context"
+	"compress/gzip"
+	"crypto/sha256"
+	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
-	"tailscale.com/util/cmpver"
-	"tailscale.com/util/winutil/authenticode"
 	"tsgui/internal/winx"
 )
 
-// ServiceName is hard-coded in tailscaled; only the display name can change.
-const ServiceName = "Tailscale"
+// bundle holds manifest.json and the gzipped files listed in it, written by
+// tools/build. The checked-in directory only has a README, so a plain
+// `go build` compiles but can't install.
+//
+//go:embed bundle
+var bundle embed.FS
 
-// files are copied from the MSI, keyed by the expected Authenticode subject.
-// tailscale-ipn.exe (the official GUI) is deliberately left out.
-var files = map[string]string{
-	"tailscaled.exe": "Tailscale Inc.",
-	"tailscale.exe":  "Tailscale Inc.",
-	"wintun.dll":     "WireGuard LLC",
+// manifest must match the one written by tools/build.
+type manifest struct {
+	Version string `json:"version"`
+	Files   []struct {
+		Name   string `json:"name"`
+		SHA256 string `json:"sha256"`
+	} `json:"files"`
 }
 
-// Service holds the branding applied to the Windows service.
+var loadManifest = sync.OnceValues(func() (*manifest, error) {
+	b, err := bundle.ReadFile("bundle/manifest.json")
+	if err != nil {
+		return nil, errors.New("這個 EXE 沒有內建服務程式，請用 build.cmd 打包")
+	}
+	var m manifest
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, fmt.Errorf("bundle/manifest.json: %w", err)
+	}
+	return &m, nil
+})
+
+// BundledVersion returns the Tailscale version of the bundled tailscaled.
+func BundledVersion() string {
+	if m, err := loadManifest(); err == nil {
+		return m.Version
+	}
+	return ""
+}
+
+// Service describes the tailscaled Windows service.
 type Service struct {
+	Name        string // internal name, hard-coded into our tailscaled
+	Exe         string // tailscaled's file name in the install folder
 	DisplayName string
 	Description string
 }
 
-// Latest is the newest Windows release on a track.
-type Latest struct {
-	Version string
-	MSI     string // file name on pkgs.tailscale.com/<track>/
-	Track   string
+// NeedsDeploy reports whether dir lacks a bundled file or has another version of it.
+func NeedsDeploy(dir string) (bool, error) {
+	stale, err := staleFiles(dir)
+	return len(stale) > 0, err
 }
 
-const pkgsBase = "https://pkgs.tailscale.com/"
-
-// FetchLatest asks pkgs.tailscale.com for the newest MSI on track.
-func FetchLatest(ctx context.Context, track string) (*Latest, error) {
-	var j struct {
-		MSIs        map[string]string
-		MSIsVersion string
+func staleFiles(dir string) ([]string, error) {
+	m, err := loadManifest()
+	if err != nil {
+		return nil, err
 	}
-	if err := getJSON(ctx, pkgsBase+track+"/?mode=json&os=windows", &j); err != nil {
-		return nil, fmt.Errorf("查詢最新版 Tailscale：%w", err)
+	var stale []string
+	for _, f := range m.Files {
+		if !strings.EqualFold(fileSHA256(filepath.Join(dir, f.Name)), f.SHA256) {
+			stale = append(stale, f.Name)
+		}
 	}
-	arch := runtime.GOARCH
-	if arch == "386" {
-		arch = "x86"
-	}
-	name := j.MSIs[arch]
-	if name == "" || j.MSIsVersion == "" || strings.ContainsAny(name, `/\`) {
-		return nil, fmt.Errorf("pkgs.tailscale.com 沒有 %s 的 Windows 版本", arch)
-	}
-	return &Latest{Version: j.MSIsVersion, MSI: name, Track: track}, nil
+	return stale, nil
 }
 
-// InstalledVersion returns the version of dir\tailscaled.exe, or "" if absent.
-func InstalledVersion(dir string) string {
-	return fileVersion(filepath.Join(dir, "tailscaled.exe"))
-}
-
-// NeedsUpdate reports whether dir lacks tailscaled or has an older one.
-func (l *Latest) NeedsUpdate(dir string) bool {
-	cur := InstalledVersion(dir)
-	return cur == "" || cmpver.Compare(l.Version, cur) > 0
-}
-
-// Deploy downloads l, verifies it and swaps the binaries in dir, then makes
-// sure the service exists, is branded and is running. If the new version
-// fails to start, the previous files are restored.
-func Deploy(ctx context.Context, l *Latest, dir string, s Service, logf func(string, ...any)) error {
-	tmp, err := secureTempDir()
+// Deploy writes the bundled files that differ into dir, then makes sure the
+// service exists, is branded and is running. If the new version fails to
+// start, the previous files are restored.
+func Deploy(dir string, s Service, logf func(string, ...any)) error {
+	m, err := loadManifest()
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tmp)
-
-	msi := filepath.Join(tmp, l.MSI)
-	logf("downloading %s", l.MSI)
-	if err := download(ctx, pkgsBase+l.Track+"/"+l.MSI, msi); err != nil {
-		return fmt.Errorf("下載 %s：%w", l.MSI, err)
+	stale, err := staleFiles(dir)
+	if err != nil {
+		return err
 	}
-	if err := authenticode.Verify(msi, "Tailscale Inc."); err != nil {
-		return fmt.Errorf("MSI 簽章驗證失敗：%w", err)
+	if len(stale) == 0 {
+		return EnsureService(dir, s)
 	}
-
-	logf("unpacking")
-	unpacked := filepath.Join(tmp, "x")
-	if out, err := winx.HiddenCommand(msiexec(), "/a", msi, "/qn", "TARGETDIR="+unpacked).CombinedOutput(); err != nil {
-		return fmt.Errorf("解開 MSI：%v %s", err, out)
-	}
-	found := map[string]string{}
-	filepath.WalkDir(unpacked, func(p string, d fs.DirEntry, err error) error {
-		if err == nil && !d.IsDir() {
-			if _, ok := files[strings.ToLower(d.Name())]; ok {
-				found[strings.ToLower(d.Name())] = p
-			}
-		}
-		return nil
-	})
-	for name, subject := range files {
-		p, ok := found[name]
-		if !ok {
-			return fmt.Errorf("MSI 裡找不到 %s（官方安裝包格式可能改了）", name)
-		}
-		if err := authenticode.Verify(p, subject); err != nil {
-			return fmt.Errorf("%s 簽章驗證失敗：%w", name, err)
-		}
+	want := map[string]string{}
+	for _, f := range m.Files {
+		want[f.Name] = f.SHA256
 	}
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	for _, name := range stale {
+		if err := extract(name, want[name], filepath.Join(dir, name+".new")); err != nil {
+			return err
+		}
+	}
+
 	logf("stopping service")
-	if err := stopService(); err != nil {
+	if err := stopService(s.Name); err != nil {
+		for _, name := range stale {
+			os.Remove(filepath.Join(dir, name+".new"))
+		}
 		return err
 	}
 	var swapped []string
@@ -149,7 +137,7 @@ func Deploy(ctx context.Context, l *Latest, dir string, s Service, logf func(str
 			os.Rename(dst+".old", dst)
 		}
 	}
-	for name := range files {
+	for _, name := range stale {
 		dst := filepath.Join(dir, name)
 		os.Remove(dst + ".old")
 		if _, err := os.Stat(dst); err == nil {
@@ -159,7 +147,7 @@ func Deploy(ctx context.Context, l *Latest, dir string, s Service, logf func(str
 			}
 		}
 		swapped = append(swapped, name)
-		if err := copyFile(found[name], dst); err != nil {
+		if err := os.Rename(dst+".new", dst); err != nil {
 			rollback()
 			return err
 		}
@@ -167,7 +155,7 @@ func Deploy(ctx context.Context, l *Latest, dir string, s Service, logf func(str
 
 	if err := EnsureService(dir, s); err != nil {
 		logf("new version failed to start (%v); rolling back", err)
-		stopService()
+		stopService(s.Name)
 		rollback()
 		if err2 := EnsureService(dir, s); err2 != nil {
 			return fmt.Errorf("%v；還原舊版也失敗：%v", err, err2)
@@ -177,11 +165,40 @@ func Deploy(ctx context.Context, l *Latest, dir string, s Service, logf func(str
 	for _, name := range swapped {
 		os.Remove(filepath.Join(dir, name+".old"))
 	}
-	logf("tailscaled %s is running", l.Version)
+	logf("%s %s is running", s.Exe, m.Version)
 	return nil
 }
 
-// EnsureService registers the service if needed (via tailscaled.exe
+// extract un-gzips a bundled file to dst and checks its SHA-256.
+func extract(name, want, dst string) error {
+	f, err := bundle.Open("bundle/" + name + ".gz")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		return err
+	}
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	h := sha256.New()
+	_, err = io.Copy(io.MultiWriter(out, h), zr)
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil && !strings.EqualFold(hex.EncodeToString(h.Sum(nil)), want) {
+		err = fmt.Errorf("內建的 %s 已損毀", name)
+	}
+	if err != nil {
+		os.Remove(dst)
+	}
+	return err
+}
+
+// EnsureService registers the service if needed (via tailscaled
 // install-system-daemon), applies the branding and starts it.
 func EnsureService(dir string, s Service) error {
 	m, err := mgr.Connect()
@@ -190,14 +207,14 @@ func EnsureService(dir string, s Service) error {
 	}
 	defer m.Disconnect()
 
-	exe := filepath.Join(dir, "tailscaled.exe")
-	svcH, err := m.OpenService(ServiceName)
+	exe := filepath.Join(dir, s.Exe)
+	svcH, err := m.OpenService(s.Name)
 	if err != nil {
 		if out, err := winx.HiddenCommand(exe, "install-system-daemon").CombinedOutput(); err != nil {
 			return fmt.Errorf("建立服務：%v %s", err, out)
 		}
-		if svcH, err = m.OpenService(ServiceName); err != nil {
-			return err
+		if svcH, err = m.OpenService(s.Name); err != nil {
+			return fmt.Errorf("找不到「%s」服務（%s 內建的服務名稱不同？）：%w", s.Name, s.Exe, err)
 		}
 	}
 	defer svcH.Close()
@@ -207,7 +224,7 @@ func EnsureService(dir string, s Service) error {
 		return err
 	}
 	if !samePath(c.BinaryPathName, exe) {
-		return fmt.Errorf("「%s」服務屬於別的安裝（%s），請先移除它", ServiceName, c.BinaryPathName)
+		return fmt.Errorf("「%s」服務屬於別的安裝（%s），請先移除它", s.Name, c.BinaryPathName)
 	}
 	if c.DisplayName != s.DisplayName || c.Description != s.Description {
 		c.DisplayName, c.Description = s.DisplayName, s.Description
@@ -228,14 +245,14 @@ func EnsureService(dir string, s Service) error {
 	return waitState(svcH, svc.Running, 30*time.Second)
 }
 
-// ServiceBinary returns the executable path of the Tailscale service, or "".
-func ServiceBinary() string {
+// ServiceBinary returns the executable path of the named service, or "".
+func ServiceBinary(name string) string {
 	m, err := mgr.Connect()
 	if err != nil {
 		return ""
 	}
 	defer m.Disconnect()
-	s, err := m.OpenService(ServiceName)
+	s, err := m.OpenService(name)
 	if err != nil {
 		return ""
 	}
@@ -248,13 +265,16 @@ func ServiceBinary() string {
 }
 
 // Remove unregisters the service using tailscaled's own uninstaller, which
-// also runs its cleanup hooks. Login state in %ProgramData%\Tailscale is kept.
-func Remove(dir string) error {
-	exe := filepath.Join(dir, "tailscaled.exe")
+// also runs its cleanup hooks. Login state in %ProgramData%\<name> is kept.
+func Remove(dir string, s Service) error {
+	return uninstall(s.Name, filepath.Join(dir, s.Exe))
+}
+
+func uninstall(name, exe string) error {
 	if _, err := os.Stat(exe); err != nil {
 		return nil
 	}
-	if !samePath(ServiceBinary(), exe) {
+	if !samePath(ServiceBinary(name), exe) {
 		return nil // not ours
 	}
 	if out, err := winx.HiddenCommand(exe, "uninstall-system-daemon").CombinedOutput(); err != nil {
@@ -263,13 +283,79 @@ func Remove(dir string) error {
 	return nil
 }
 
-func stopService() error {
+// legacyService is the official tailscaled's service name, used by earlier
+// versions of this program, which deployed the official binaries.
+const legacyService = "Tailscale"
+
+// RemoveLegacy removes the official tailscaled that an earlier version
+// deployed into dir, then carries the official login state over to stateDir
+// so the device doesn't have to log in again.
+func RemoveLegacy(dir, stateDir string, logf func(string, ...any)) error {
+	old := filepath.Join(dir, "tailscaled.exe")
+	if samePath(ServiceBinary(legacyService), old) {
+		logf("removing the official tailscaled service")
+		if err := stopService(legacyService); err != nil {
+			return err
+		}
+		if err := uninstall(legacyService, old); err != nil {
+			return err
+		}
+	}
+	for _, name := range []string{"tailscaled.exe", "tailscale.exe"} {
+		os.Remove(filepath.Join(dir, name))
+	}
+	return migrateState(stateDir, logf)
+}
+
+func migrateState(stateDir string, logf func(string, ...any)) error {
+	if ServiceBinary(legacyService) != "" {
+		return nil // still used by an official install; two devices must not share a key
+	}
+	dst := filepath.Join(stateDir, "server-state.conf")
+	if _, err := os.Stat(dst); err == nil {
+		return nil
+	}
+	src := filepath.Join(os.Getenv("ProgramData"), legacyService, "server-state.conf")
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return nil
+	}
+	// The file holds the device's private keys. tailscaled locks the folder
+	// down when it starts; do it now so it is never readable by users.
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return err
+	}
+	if err := lockDown(stateDir); err != nil {
+		return err
+	}
+	if err := os.WriteFile(dst, b, 0o600); err != nil {
+		return err
+	}
+	logf("copied login state from %s", src)
+	return nil
+}
+
+// lockDown gives only SYSTEM and Administrators access to dir and its contents.
+func lockDown(dir string) error {
+	sd, err := windows.SecurityDescriptorFromString("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+	if err != nil {
+		return err
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	return windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
+}
+
+func stopService(name string) error {
 	m, err := mgr.Connect()
 	if err != nil {
 		return err
 	}
 	defer m.Disconnect()
-	s, err := m.OpenService(ServiceName)
+	s, err := m.OpenService(name)
 	if err != nil {
 		return nil // not installed yet
 	}
@@ -322,17 +408,21 @@ func samePath(cmdline, exe string) bool {
 	return strings.EqualFold(filepath.Clean(unquoteExe(cmdline)), filepath.Clean(exe))
 }
 
-// secureTempDir creates a directory under %SystemRoot%\Temp. Files that an
-// elevated process creates there can't be modified by standard users, so the
-// verified MSI can't be swapped before it is unpacked.
-func secureTempDir() (string, error) {
-	return os.MkdirTemp(filepath.Join(os.Getenv("SystemRoot"), "Temp"), "tsdeploy-")
+func fileSHA256(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
-func msiexec() string { return filepath.Join(os.Getenv("SystemRoot"), `System32\msiexec.exe`) }
-
-// fileVersion reads the fixed version resource as "major.minor.patch".
-func fileVersion(path string) string {
+// FileVersion reads the fixed version resource of an EXE as "major.minor.patch".
+func FileVersion(path string) string {
 	size, err := windows.GetFileVersionInfoSize(path, nil)
 	if err != nil || size == 0 {
 		return ""
@@ -347,57 +437,4 @@ func fileVersion(path string) string {
 		return ""
 	}
 	return fmt.Sprintf("%d.%d.%d", fixed.FileVersionMS>>16, fixed.FileVersionMS&0xffff, fixed.FileVersionLS>>16)
-}
-
-var httpClient = &http.Client{Timeout: 15 * time.Minute}
-
-func getJSON(ctx context.Context, url string, v any) error {
-	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return errors.New(resp.Status)
-	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(v)
-}
-
-func download(ctx context.Context, url, dst string) error {
-	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return errors.New(resp.Status)
-	}
-	f, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
-	}
-	return out.Close()
 }

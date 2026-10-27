@@ -1,2 +1,7 @@
 /dist/
 *.log
+
+# tools/build scratch space and the bundle it builds (embedded into the EXE)
+/_build/
+/internal/tsdeploy/bundle/*
+!/internal/tsdeploy/bundle/README.md
