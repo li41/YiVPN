@@ -164,7 +164,7 @@ func (c *Config) Validate() error {
 	}
 	// Extra files land next to ours, so their names must not clash.
 	taken := map[string]bool{}
-	for _, n := range []string{c.ExeName, c.DaemonExe(), "wintun.dll", "THIRD-PARTY-NOTICES.txt"} {
+	for _, n := range []string{c.ExeName, c.DaemonExe(), c.CLIExe(), "wintun.dll", "THIRD-PARTY-NOTICES.txt"} {
 		taken[strings.ToLower(n)] = true
 	}
 	for _, p := range c.Install.ExtraFiles {

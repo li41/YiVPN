@@ -49,6 +49,7 @@ func TestExtraFiles(t *testing.T) {
 	for _, bad := range [][]string{
 		{"x/MyVPN.exe"},          // the GUI itself
 		{"MyVPN-service.exe"},    // tailscaled
+		{"MyVPN-cli.exe"},        // the CLI
 		{"WINTUN.DLL"},           // case-insensitive
 		{"a/Yi.exe", "b/yi.exe"}, // same name twice
 		{""},

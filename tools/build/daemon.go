@@ -33,8 +33,8 @@ const (
 // bundleManifest must match the one read by internal/tsdeploy.
 type bundleManifest struct {
 	Version string       `json:"version"`
-	Files   []bundleFile `json:"files"`  // tailscaled and what it needs
-	Extras  []bundleFile `json:"extras"` // install.extraFiles
+	Files   []bundleFile `json:"files"`  // replaced with the service stopped
+	Extras  []bundleFile `json:"extras"` // CLI, notices, install.extraFiles
 }
 
 type bundleFile struct {
@@ -42,8 +42,8 @@ type bundleFile struct {
 	SHA256 string `json:"sha256"`
 }
 
-// buildDaemon builds the rebranded tailscaled from the tailscale.com version
-// in go.mod and writes it, wintun.dll, the license notices and
+// buildDaemon builds the rebranded tailscaled and CLI from the tailscale.com
+// version in go.mod and writes them, wintun.dll, the license notices and
 // install.extraFiles into internal/tsdeploy/bundle, which the GUI EXE embeds.
 func buildDaemon(cfg *brand.Config, cfgDir string) error {
 	tsDir, tsVer, err := tailscaleModule()
@@ -66,26 +66,33 @@ func buildDaemon(cfg *brand.Config, cfgDir string) error {
 	if err := applyPatches(src, patches(cfg)); err != nil {
 		return err
 	}
-	if err := writeDaemonSyso(cfg, cfgDir, src, tsVer); err != nil {
-		return err
+	cmds := []struct {
+		pkg, exe, description string
+	}{
+		{"tailscaled", cfg.DaemonExe(), cfg.Install.ServiceDisplayName},
+		{"tailscale", cfg.CLIExe(), cfg.ProductName + " CLI"},
 	}
-
-	daemon := filepath.Join(out, cfg.DaemonExe())
-	step("編譯 %s", daemon)
-	abs, err := filepath.Abs(daemon)
-	if err != nil {
-		return err
+	for _, c := range cmds {
+		exe := filepath.Join(out, c.exe)
+		step("編譯 %s", exe)
+		pkg := filepath.Join(src, "cmd", c.pkg)
+		if err := writeCmdSyso(pkg, resources{
+			icon:        resolve(cfgDir, cfg.Icons.App),
+			version:     tsVer,
+			description: c.description,
+			product:     cfg.ProductName,
+			company:     cfg.CompanyName,
+			copyright:   cfg.Copyright,
+			filename:    c.exe,
+			internal:    strings.TrimSuffix(c.exe, ".exe"),
+		}); err != nil {
+			return err
+		}
+		if err := goBuild(src, "./cmd/"+c.pkg, exe, tsVer); err != nil {
+			return err
+		}
 	}
-	stamp := "-X tailscale.com/version.shortStamp=" + tsVer + " -X tailscale.com/version.longStamp=" + tsVer
-	cmd := exec.Command("go", "build", "-trimpath",
-		"-tags", "ts_omit_clientupdate", // its updater would install the official MSI
-		"-ldflags", "-s -w "+stamp, "-o", abs, "./cmd/tailscaled")
-	cmd.Dir = src
-	cmd.Env = append(os.Environ(), "GOOS=windows", "GOARCH="+*arch, "CGO_ENABLED=0", "GOWORK=off")
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		return err
-	}
+	daemon, cli := filepath.Join(out, cfg.DaemonExe()), filepath.Join(out, cfg.CLIExe())
 
 	step("取得 wintun.dll")
 	wintun, wintunLicense, err := fetchWintun(out)
@@ -98,14 +105,15 @@ func buildDaemon(cfg *brand.Config, cfgDir string) error {
 		return err
 	}
 	notices := filepath.Join(out, "THIRD-PARTY-NOTICES.txt")
-	text := cfg.DaemonExe() + " is built from Tailscale " + tsVer + " (https://github.com/tailscale/tailscale).\r\n\r\n" +
+	text := cfg.DaemonExe() + " and " + cfg.CLIExe() + " are built from Tailscale " + tsVer + " (https://github.com/tailscale/tailscale).\r\n\r\n" +
 		crlf(tsLicense) + "\r\n\r\n----------------------------------------\r\n\r\n" +
 		"wintun.dll is the unmodified Wintun driver (https://www.wintun.net).\r\n\r\n" + crlf(wintunLicense)
 	if err := os.WriteFile(notices, []byte(text), 0o644); err != nil {
 		return err
 	}
 
-	var extras []string
+	// Only the service's own files need it stopped to be replaced.
+	extras := []string{cli, notices}
 	for _, p := range cfg.Install.ExtraFiles {
 		p = resolve(cfgDir, p)
 		if _, err := os.Stat(p); err != nil {
@@ -116,7 +124,27 @@ func buildDaemon(cfg *brand.Config, cfgDir string) error {
 	}
 
 	step("寫入 %s", bundleDir)
-	return writeBundle(tsVer, []string{daemon, wintun, notices}, extras)
+	return writeBundle(tsVer, []string{daemon, wintun}, extras)
+}
+
+// goBuild builds a command from the patched Tailscale source.
+func goBuild(src, pkg, out, tsVer string) error {
+	abs, err := filepath.Abs(out)
+	if err != nil {
+		return err
+	}
+	stamp := "-X tailscale.com/version.shortStamp=" + tsVer + " -X tailscale.com/version.longStamp=" + tsVer
+	cmd := exec.Command("go", "build", "-trimpath",
+		// _build is inside our git repo: without this our commit would be
+		// stamped in and every build would differ, restarting the service
+		// on every GUI update.
+		"-buildvcs=false",
+		"-tags", "ts_omit_clientupdate", // its updater would install the official MSI
+		"-ldflags", "-s -w "+stamp, "-o", abs, pkg)
+	cmd.Dir = src
+	cmd.Env = append(os.Environ(), "GOOS=windows", "GOARCH="+*arch, "CGO_ENABLED=0", "GOWORK=off")
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	return cmd.Run()
 }
 
 // tailscaleModule returns the source directory and version of the
@@ -133,27 +161,17 @@ func tailscaleModule() (dir, ver string, err error) {
 	return dir, strings.TrimPrefix(ver, "v"), nil
 }
 
-// writeDaemonSyso replaces upstream's manifest-only resources with ours:
+// writeCmdSyso replaces upstream's manifest-only resources in pkg with ours:
 // the same manifest plus version info and the app icon, so Task Manager and
 // the file's Properties show our names.
-func writeDaemonSyso(cfg *brand.Config, cfgDir, src, tsVer string) error {
-	pkg := filepath.Join(src, "cmd", "tailscaled")
+func writeCmdSyso(pkg string, r resources) error {
 	old, _ := filepath.Glob(filepath.Join(pkg, "*.syso"))
 	for _, o := range old {
 		if err := os.Remove(o); err != nil {
 			return err
 		}
 	}
-	return writeResources(filepath.Join(pkg, "rsrc_windows_"+*arch+".syso"), resources{
-		icon:        resolve(cfgDir, cfg.Icons.App),
-		version:     tsVer,
-		description: cfg.Install.ServiceDisplayName,
-		product:     cfg.ProductName,
-		company:     cfg.CompanyName,
-		copyright:   cfg.Copyright,
-		filename:    cfg.DaemonExe(),
-		internal:    cfg.ServiceName(),
-	})
+	return writeResources(filepath.Join(pkg, "rsrc_windows_"+*arch+".syso"), r)
 }
 
 // fetchWintun downloads (once) the pinned Wintun release, checks it and

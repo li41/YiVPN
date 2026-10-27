@@ -8,6 +8,7 @@
 C:\Program Files\<dirName>\
   MyVPN.exe                GUI（每位使用者登入時啟動）＋安裝程式＋更新器，內含下面兩個檔案
   <appID>-service.exe      改名後的 tailscaled（自己編譯）
+  <appID>-cli.exe          改名後的 tailscale 指令（自己編譯；安裝資料夾會加進系統 PATH）
   wintun.dll               官方 Wintun 驅動（WireGuard LLC 簽章，未修改）
   THIRD-PARTY-NOTICES.txt  Tailscale 與 Wintun 的授權聲明
   （install.extraFiles）   例如 Yi.exe，同樣包在 MyVPN.exe 裡
@@ -104,7 +105,7 @@ build.cmd -sign "signtool sign /a /fd sha256 /tr http://timestamp.digicert.com /
 - **Tailscale 的安全修補要自己跟上**：tailscaled 不再從 Tailscale 自動更新，官方發布新版時要照「升級 Tailscale」重新打包發布，不然使用者會停在舊版。
 - **沒有官方簽章**：`<appID>-service.exe` 是自己編譯的，沒有 Tailscale 的數位簽章。以 SYSTEM 執行的未簽章程式比較容易被防毒軟體或 SmartScreen 攔下，正式發布建議用自己的程式碼簽章憑證簽 GUI 的 EXE。
 - **服務本身還是 Tailscale**：登入頁面、管理主控台（`adminConsoleURL`）、MagicDNS 的 `*.ts.net` 網域、服務記錄檔與錯誤訊息的內文，都還是 Tailscale 的名稱。改的是 Windows 上看得到的名稱，不是背後的服務。
-- **不附 CLI**：沒有 `tailscale.exe`（它的說明和輸出到處都是 Tailscale）。要用 CLI 除錯時可以在 `_build\tailscale` 裡執行 `go run ./cmd/tailscale --socket=\\.\pipe\ProtectedPrefix\Administrators\<appID>\<appID>-service status`。
+- **CLI 的文字還是 Tailscale**：`<appID>-cli.exe` 就是 `tailscale.exe` 改名，預設連到本產品的服務，但說明與輸出的文字（例如「Tailscale is stopped」）沒有改。用法跟官方一樣，例如 `<appID>-cli status`。安裝時把安裝資料夾加進系統 PATH，解除安裝時移除；已經開著的命令提示字元要重開才看得到。
 - 舊版官方 tailscaled 留下的 `C:\ProgramData\Tailscale` 不會刪除（登入狀態已複製過去）。
 - 官方 MSI 另外會做的事這裡沒做：設定程序防護（process mitigation）原則。
 - 選單文字是英文，跟官方一樣；要翻譯的話改 `internal/tray/text.go`。複製 IP 之後不會跳通知。

@@ -18,6 +18,10 @@ func (c *Config) ServiceName() string { return c.AppID }
 // DaemonExe is the file name of the self-built tailscaled.
 func (c *Config) DaemonExe() string { return c.AppID + "-service.exe" }
 
+// CLIExe is the file name of the self-built tailscale CLI. The install
+// folder is on PATH, so it runs as "<appID>-cli".
+func (c *Config) CLIExe() string { return c.AppID + "-cli.exe" }
+
 // DaemonPipeName is the LocalAPI pipe below \\.\pipe\ProtectedPrefix\Administrators\.
 func (c *Config) DaemonPipeName() string { return c.AppID + `\` + c.AppID + "-service" }
 

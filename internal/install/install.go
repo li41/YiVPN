@@ -205,8 +205,9 @@ func Refresh(c *brand.Config) error {
 	return errors.Join(deployBundle(c), Register(c, Exe(c)))
 }
 
-// Register writes the Installed apps entry, the Run-at-login entry and the
-// Start menu shortcut for all users. Needs administrator rights.
+// Register writes the Installed apps entry, the Run-at-login entry, the
+// Start menu shortcut for all users and the install folder on PATH. Needs
+// administrator rights.
 func Register(c *brand.Config, exe string) error {
 	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, uninstallRoot+c.AppID, registry.ALL_ACCESS)
 	if err != nil {
@@ -246,6 +247,10 @@ func Register(c *brand.Config, exe string) error {
 		}
 	}
 	k.SetStringValue("ShortcutPath", lnk)
+
+	if err := addToPath(Dir(c)); err != nil {
+		log.Printf("PATH: %v", err) // only the CLI needs it
+	}
 
 	run, _, err := registry.CreateKey(registry.LOCAL_MACHINE, runKey, registry.SET_VALUE)
 	if err != nil {
@@ -369,6 +374,9 @@ func UninstallElevated(c *brand.Config) error {
 	}
 	if err := tsdeploy.Remove(dir, serviceSettings(c)); err != nil {
 		errs = append(errs, err)
+	}
+	if err := removeFromPath(dir); err != nil {
+		log.Printf("PATH: %v", err)
 	}
 	unblockOfficialUpdater()
 	if k, err := registry.OpenKey(registry.LOCAL_MACHINE, uninstallRoot+c.AppID, registry.QUERY_VALUE); err == nil {

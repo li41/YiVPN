@@ -39,8 +39,8 @@ var bundle embed.FS
 // manifest must match the one written by tools/build.
 type manifest struct {
 	Version string       `json:"version"`
-	Files   []bundleFile `json:"files"`  // tailscaled and what it needs
-	Extras  []bundleFile `json:"extras"` // install.extraFiles; not tied to the service
+	Files   []bundleFile `json:"files"`  // tailscaled and wintun.dll: replaced with the service stopped
+	Extras  []bundleFile `json:"extras"` // the CLI, notices and install.extraFiles
 }
 
 type bundleFile struct {
@@ -86,7 +86,8 @@ func NeedsDeploy(dir string) (bool, error) {
 	return len(stale(dir, m.Files))+len(stale(dir, m.Extras)) > 0, nil
 }
 
-// ExtraFiles returns the names of the bundled install.extraFiles.
+// ExtraFiles returns the names of the bundled files that aren't part of the
+// service (the CLI, notices and install.extraFiles).
 func ExtraFiles() []string {
 	m, err := loadManifest()
 	if err != nil {
@@ -121,7 +122,8 @@ func staleFiles(dir string) ([]string, error) {
 	return names, nil
 }
 
-// DeployExtras writes the bundled install.extraFiles that differ into dir.
+// DeployExtras writes the bundled files that aren't part of the service and
+// differ into dir, without stopping the service.
 // A running copy is renamed out of the way (Windows allows that) and its
 // .old file removed on a later run.
 func DeployExtras(dir string, logf func(string, ...any)) error {

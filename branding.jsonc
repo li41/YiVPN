@@ -22,7 +22,7 @@
   "copyright": "Copyright © 2026 Li41TEST",
 
   // 版本號（x.y.z）。GUI 自動更新會拿這個比對新舊。
-  "version": "1.0.0",
+  "version": "1.0.1",
 
   // 圖示（.ico 檔，建議包含 16、24、32、48、256 像素）。路徑相對於本設定檔。
   "icons": {
