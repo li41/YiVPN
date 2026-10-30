@@ -66,6 +66,9 @@ func buildDaemon(cfg *brand.Config, cfgDir string) error {
 	if err := applyPatches(src, patches(cfg)); err != nil {
 		return err
 	}
+	if err := addSources(src); err != nil {
+		return err
+	}
 	cmds := []struct {
 		pkg, exe, description string
 	}{

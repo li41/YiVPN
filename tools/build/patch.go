@@ -81,7 +81,75 @@ func patches(cfg *brand.Config) []patch {
 		{"util/osshare/filesharingstatus_windows.go", "`*\\shell\\tailscale`", q(`*\shell\` + strings.ToLower(id)), 1},
 		{"util/osshare/filesharingstatus_windows.go", `"Send with Tailscale..."`, q("Send with " + cfg.ProductName + "..."), 1},
 		{"ipn/desktop/sessions_windows.go", `"Tailscale-SessionManager"`, q(id + "-SessionManager"), 1},
+
+		// Turn off NetBIOS over TCP/IP on the adapter before it gets its
+		// addresses (see netbiosGo).
+		{"wgengine/router/osrouter/ifconfig_windows.go", "err = syncAddresses(iface, addresses)", "disableNetBIOS(luid)\n\terr = syncAddresses(iface, addresses)", 1},
 	}
+}
+
+// sources are files added to the copy of the tailscale.com source, keyed by
+// path relative to the module root.
+var sources = map[string]string{
+	"wgengine/router/osrouter/netbios_windows.go": netbiosGo,
+}
+
+// netbiosGo replaces upstream's disableNetBIOS in net/dns, which never runs
+// (it first looks up an AF_NETBIOS IP interface, which Windows always
+// rejects) and would be too late anyway: NetBT only reads NetbiosOptions when
+// an address is added, and Windows resets it to 0 (enabled) every time Wintun
+// creates the adapter, i.e. on every service start.
+const netbiosGo = `// Added by tsgui's build (tools/build/patch.go).
+
+package osrouter
+
+import (
+	"log"
+
+	"golang.org/x/sys/windows/registry"
+	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
+	"tailscale.com/util/winutil"
+)
+
+// disableNetBIOS sets NetbiosOptions to 2 (NetBIOS over TCP/IP disabled) for
+// the adapter. It must run before the adapter's addresses are added.
+func disableNetBIOS(luid winipcfg.LUID) {
+	guid, err := luid.GUID()
+	if err != nil {
+		log.Printf("disableNetBIOS: %v", err)
+		return
+	}
+	path := winutil.NetBTInterfacePrefix.WithSuffix(guid.String())
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, string(path), registry.QUERY_VALUE|registry.SET_VALUE)
+	if err != nil {
+		log.Printf("disableNetBIOS: opening %s: %v", path, err)
+		return
+	}
+	defer k.Close()
+	if v, _, err := k.GetIntegerValue("NetbiosOptions"); err == nil && v == 2 {
+		return
+	}
+	if err := k.SetDWordValue("NetbiosOptions", 2); err != nil {
+		log.Printf("disableNetBIOS: %v", err)
+		return
+	}
+	log.Printf("disableNetBIOS: NetBIOS over TCP/IP disabled on %v", guid)
+}
+`
+
+// addSources writes sources into root. Upstream adding a file with the same
+// name stops the build, like a patch that no longer matches.
+func addSources(root string) error {
+	for name, src := range sources {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("加入 %s：Tailscale 原始碼已經有這個檔案，請檢查 tools/build/patch.go", name)
+		}
+		if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // applyPatches edits the copy of the tailscale.com source in root.

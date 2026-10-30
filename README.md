@@ -25,6 +25,7 @@ Windows 服務「<appID>」（顯示名稱可自訂）→ <appID>-service.exe
 | 「已安裝的應用程式」不出現 Tailscale | 不安裝官方 MSI，由 `<appID>-service.exe install-system-daemon` 自己註冊服務 |
 | 到處都不出現 Tailscale | `build.cmd` 複製 go.mod 指定版本的 Tailscale 原始碼，把服務名稱、網路介面卡、named pipe、ProgramData 資料夾、系統原則機碼、防火牆規則、hosts 區段等名稱改成 `appID`（見 `tools/build/patch.go`），再編譯 |
 | tailscaled 自動更新 | tailscaled 包在 GUI 的 EXE 裡，GUI 更新時一起更新：新版 GUI 比對 SHA-256，不同就停服務、替換、再啟動；新版啟動失敗會自動還原舊版。tailscaled 內建的更新器在編譯時就拿掉了（它只會裝官方 MSI） |
+| VPN 網卡不開 NetBIOS | 每次服務啟動、網卡拿到 IP 之前，把它的 NetBIOS over TCP/IP 停用，tailnet 上的其他裝置連不到這台的 137–139 埠。官方 tailscaled 也想這麼做，但那段程式實際上不會執行；Windows 每次建立網卡都會把設定重設，所以要在指派 IP 前寫入 |
 | 由 GUI 觸發更新 | 有設 `update.baseURL` 時，選單有「Check for updates」，按下去會直接啟動上面的排程。排程開放一般使用者觸發，**不用 UAC** |
 | 使用習慣不變 | 選單文字與結構照官方：帳號切換、This device、Network devices、Exit nodes、Preferences、Admin console… 也會遵守官方的系統原則（機碼改成 `HKLM\SOFTWARE\Policies\<appID>`） |
 | 名稱與圖示可自訂 | 全部寫在 `branding.jsonc`，打包時寫進 EXE |
@@ -54,6 +55,8 @@ go mod tidy
 ```
 
 再調高 `branding.jsonc` 的 `version`、執行 `build.cmd`、發布。Tailscale 改了被修補的程式時，打包會停在「修補 …：預期找到 N 處」，照訊息調整 `tools/build/patch.go` 即可，不會產出改名不完整的版本。
+
+不過 Tailscale 在**新的地方**加上「Tailscale」名稱時，打包不會發現。升級後請比對新舊兩版原始碼，確認沒有新增 Windows 看得到的名稱（例如服務、網卡、登錄機碼、檔案路徑、防火牆規則）。
 
 有程式碼簽章憑證的話，打包時一起簽（工具會先簽章再計算 `latest.json` 的 SHA-256）：
 
